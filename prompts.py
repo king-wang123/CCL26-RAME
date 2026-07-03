@@ -1,8 +1,8 @@
-"""Three system prompts for the V6+V7+V8 ensemble.
+"""Three system prompts for the Strict/Relaxed/Balanced ensemble.
 
-V6 (strict typed-pair): emphasises typical head/tail type combinations.
-V7 (no typed-pair):     only semantic definitions, any head/tail allowed.
-V8 (balanced):          common patterns listed but explicitly not exhaustive.
+Strict:   emphasises typical head/tail type combinations (high precision).
+Relaxed:  only semantic definitions, any head/tail allowed (high recall).
+Balanced: common patterns listed but explicitly not exhaustive (trade-off).
 
 All three share the same demo format and user template.
 """
@@ -25,8 +25,8 @@ _JSON_SCHEMA = (
     '}}'
 )
 
-# ── V6: strict typed-pair ─────────────────────────────────────────────────────
-_V6_REL = "\n".join([
+# ── Strict: strict typed-pair ─────────────────────────────────────────────────
+_STRICT_REL = "\n".join([
     "- CON (CONTAINS, typical: CROP→VAR): Variety belongs to a crop.",
     "- USE (USES, typical: VAR→BM): Breeding method used to produce a variety.",
     "- HAS (HAS, typical: VAR→TRT): Variety has / exhibits a trait.",
@@ -35,21 +35,21 @@ _V6_REL = "\n".join([
     "- LOI (LOCATED_IN, typical: MRK/QTL/GENE→CHR): Entity located on a chromosome.",
 ])
 
-V6_SYSTEM_PROMPT = f"""You are an information extraction system for minor-grain crop breeding texts.
+STRICT_SYSTEM_PROMPT = f"""You are an information extraction system for minor-grain crop breeding texts.
 
 Entities (12 types):
 {_ENT_GUIDE}
 
 Relations (6 types):
-{_V6_REL}
+{_STRICT_REL}
 
 Rules: entities are verbatim substrings; extract every mention (occurrence=1,2,3…); relations must use extracted entities as head/tail.
 
 Return ONLY:
 {_JSON_SCHEMA}"""
 
-# ── V7: no typed-pair ─────────────────────────────────────────────────────────
-_V7_REL = "\n".join([
+# ── Relaxed: no typed-pair ────────────────────────────────────────────────────
+_RELAXED_REL = "\n".join([
     "- CON (CONTAINS): Head contains/subsumes the tail.",
     "- USE (USES): Head uses the tail as a method/marker/resource.",
     "- HAS (HAS): Head possesses/exhibits/is characterised by the tail trait.",
@@ -58,21 +58,21 @@ _V7_REL = "\n".join([
     "- LOI (LOCATED_IN/ASSOCIATED_WITH): Head is located in or associated with the tail.",
 ])
 
-V7_SYSTEM_PROMPT = f"""You are an information extraction system for minor-grain crop breeding texts.
+RELAXED_SYSTEM_PROMPT = f"""You are an information extraction system for minor-grain crop breeding texts.
 
 Entities (12 types):
 {_ENT_GUIDE}
 
 Relations (6 types — ANY head/tail type combination is valid when the semantic definition fits):
-{_V7_REL}
+{_RELAXED_REL}
 
 Rules: entities are verbatim substrings; extract every mention (occurrence=1,2,3…); err on the side of recall for relations.
 
 Return ONLY:
 {_JSON_SCHEMA}"""
 
-# ── V8: balanced ──────────────────────────────────────────────────────────────
-_V8_REL = "\n".join([
+# ── Balanced ──────────────────────────────────────────────────────────────────
+_BALANCED_REL = "\n".join([
     "- CON (CONTAINS, common: CROP→VAR): Head contains/subsumes the tail. Other combinations also valid.",
     "- USE (USES, common: VAR→BM): Head uses the tail as a method/resource. Other combinations also valid.",
     "- HAS (HAS, common: VAR→TRT): Head possesses/exhibits the tail. Other combinations also valid.",
@@ -81,13 +81,13 @@ _V8_REL = "\n".join([
     "- LOI (LOCATED_IN, common: MRK/QTL/GENE→CHR): Head located in/associated with the tail. Other combinations also valid.",
 ])
 
-V8_SYSTEM_PROMPT = f"""You are an information extraction system for minor-grain crop breeding texts.
+BALANCED_SYSTEM_PROMPT = f"""You are an information extraction system for minor-grain crop breeding texts.
 
 Entities (12 types):
 {_ENT_GUIDE}
 
 Relations (6 types — common patterns shown but NOT exhaustive; semantic definition is authoritative):
-{_V8_REL}
+{_BALANCED_REL}
 
 Rules: entities are verbatim substrings; extract every mention (occurrence=1,2,3…); prefer common pattern when it applies but don't skip non-typical relations.
 

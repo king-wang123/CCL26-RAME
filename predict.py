@@ -1,10 +1,11 @@
-"""MGBIE predictor: V6+V7+V8 three-prompt ensemble with retrieval-augmented generation.
+"""MGBIE predictor: Strict/Relaxed/Balanced three-prompt ensemble with retrieval-augmented generation.
 
-Method:
-  Three prompts (V6 strict-typed-pair / V7 no-typed-pair / V8 balanced),
-  each running N_DRAWS independent draws with retrieved K=8 demos from a pool
-  of training docs. Total 3*N_DRAWS draws per document, majority vote at
-  configurable threshold for both entities and relations.
+Method (RAME):
+  Three prompts (Strict / Relaxed / Balanced), each running N_DRAWS independent
+  draws with retrieved K=8 demos from a pool of training docs. Total 3*N_DRAWS
+  draws per document.  Majority vote is applied on the raw occurrence-based LLM
+  outputs; only the winning entities/relations are aligned to character spans
+  via :func:`to_official`.
 
 Usage:
   # Inference on test set (BM25-only retrieval):
@@ -15,13 +16,9 @@ Usage:
   python predict.py --input data/test.json --output results/submit.json \
       --pool data/train.json --workers 16 --retriever hybrid
 
-  # Evaluate on dev split:
-  python predict.py --input data/train.json --dev_split data/dev_split.json \
-      --output results/dev_pred.json --workers 16
-
   # Merge pre-computed raw files (skip LLM calls):
-  python predict.py --merge_v6 v6.raw.json --merge_v7 v7.raw.json \
-      --merge_v8 v8.raw.json --input data/test.json --output results/submit.json
+  python predict.py --merge_strict strict.raw.json --merge_relaxed relaxed.raw.json \
+      --merge_balanced balanced.raw.json --input data/test.json --output results/submit.json
 """
 from __future__ import annotations
 import argparse, concurrent.futures as cf, json, os, sys, time
@@ -34,7 +31,7 @@ sys.path.insert(0, HERE)
 
 from model import LLM
 from retriever import BM25Retriever
-from prompts import V6_SYSTEM_PROMPT, V7_SYSTEM_PROMPT, V8_SYSTEM_PROMPT, build_messages
+from prompts import STRICT_SYSTEM_PROMPT, RELAXED_SYSTEM_PROMPT, BALANCED_SYSTEM_PROMPT, build_messages
 from tools import extract_json_obj, to_official, majority_vote
 
 # ── Hyperparameters (frozen configuration) ─────────────────────────────────────
@@ -47,9 +44,9 @@ TEMPERATURE = 0.0
 ENABLE_THINKING = True  # enable thinking/reasoning mode for quality
 
 PROMPTS = [
-    ("v6", V6_SYSTEM_PROMPT, 20_000),  # seed_base offsets to avoid collision
-    ("v7", V7_SYSTEM_PROMPT, 30_000),
-    ("v8", V8_SYSTEM_PROMPT, 40_000),
+    ("strict",   STRICT_SYSTEM_PROMPT,   20_000),  # seed_base offsets to avoid collision
+    ("relaxed",  RELAXED_SYSTEM_PROMPT,  30_000),
+    ("balanced", BALANCED_SYSTEM_PROMPT, 40_000),
 ]
 
 
@@ -57,20 +54,21 @@ PROMPTS = [
 
 def _one_draw(llm: LLM, text: str, system_prompt: str,
               demos: List[Dict], seed: int) -> Dict[str, Any]:
+    """Return raw occurrence-based prediction (no span alignment)."""
     messages = build_messages(system_prompt, text, demos)
     outs, _ = llm.chat_with_thinking(messages, temperature=TEMPERATURE,
                                       n=1, seed=seed, max_tokens=MAX_TOKENS,
                                       enable_thinking=ENABLE_THINKING)
     raw = outs[0] if outs else ""
-    parsed = extract_json_obj(raw) or {"entities": [], "relations": []}
-    return to_official(text, parsed)
+    return extract_json_obj(raw) or {"entities": [], "relations": []}
 
 
 # ── Per-document extraction ───────────────────────────────────────────────────
 
 def extract_doc(llm: LLM, text: str, retriever,
                 pool_docs: List[Dict], doc_idx: int) -> Dict[str, Any]:
-    """Run all draws (3 prompts × N_DRAWS) and return majority-voted result."""
+    """Run all draws (3 prompts × N_DRAWS), majority-vote on raw outputs,
+    then align surviving entities/relations to character spans."""
     all_draws = []
     for name, sys_prompt, seed_base in PROMPTS:
         top_m_idx = retriever.top_m(text, RETRIEVAL_M)
@@ -80,7 +78,8 @@ def extract_doc(llm: LLM, text: str, retriever,
             demos = [pool_docs[i] for i in demo_local_idx]
             draw = _one_draw(llm, text, sys_prompt, demos, seed)
             all_draws.append(draw)
-    return majority_vote(all_draws, threshold=VOTE_THR)
+    voted = majority_vote(all_draws, threshold=VOTE_THR)
+    return to_official(text, voted)
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -91,35 +90,27 @@ def run(args):
     print(f"[predict] {len(docs)} input docs", flush=True)
 
     # Merge mode: skip LLM calls, just merge pre-computed raw files
-    if args.merge_v6 and args.merge_v7 and args.merge_v8:
-        raw6 = json.load(open(args.merge_v6))
-        raw7 = json.load(open(args.merge_v7))
-        raw8 = json.load(open(args.merge_v8))
-        assert len(raw6) == len(raw7) == len(raw8) == len(docs)
+    if args.merge_strict and args.merge_relaxed and args.merge_balanced:
+        raw_s = json.load(open(args.merge_strict))
+        raw_r = json.load(open(args.merge_relaxed))
+        raw_b = json.load(open(args.merge_balanced))
+        assert len(raw_s) == len(raw_r) == len(raw_b) == len(docs)
         preds = []
-        for r6, r7, r8, doc in zip(raw6, raw7, raw8, docs):
-            draws = (r6.get("draws", [])[:N_DRAWS]
-                     + r7.get("draws", [])[:N_DRAWS]
-                     + r8.get("draws", [])[:N_DRAWS])
+        for rs, rr, rb, doc in zip(raw_s, raw_r, raw_b, docs):
+            draws = (rs.get("draws", [])[:N_DRAWS]
+                     + rr.get("draws", [])[:N_DRAWS]
+                     + rb.get("draws", [])[:N_DRAWS])
             if not draws:
                 preds.append({"text": doc["text"], "entities": [], "relations": []})
             else:
-                preds.append(majority_vote(draws, threshold=VOTE_THR))
+                voted = majority_vote(draws, threshold=VOTE_THR)
+                preds.append(to_official(doc["text"], voted))
         _save(preds, args.output, args.zip)
         return
 
     # Load demo pool
-    if args.dev_split:
-        split = json.load(open(args.dev_split))
-        all_train = json.load(open(args.pool or args.input))
-        pool_docs = [all_train[i] for i in split["pool_idx"]]
-        # Evaluate mode: only run on dev docs
-        dev_idx = split["dev_idx"]
-        docs = [all_train[i] for i in dev_idx]
-        print(f"[predict] dev mode: {len(docs)} dev docs, pool={len(pool_docs)}", flush=True)
-    else:
-        pool_docs = json.load(open(args.pool))
-        print(f"[predict] inference mode: pool={len(pool_docs)} train docs", flush=True)
+    pool_docs = json.load(open(args.pool))
+    print(f"[predict] inference mode: pool={len(pool_docs)} train docs", flush=True)
 
     # Build retriever
     pool_texts = [d["text"] for d in pool_docs]
@@ -211,11 +202,6 @@ def run(args):
     _save(preds, args.output, args.zip)
     print(f"[predict] checkpoint dir kept at: {checkpoint_dir}", flush=True)
 
-    # Evaluate if gold available
-    if args.dev_split:
-        from tools import evaluate, format_metrics
-        print(format_metrics(evaluate(preds, docs)), flush=True)
-
 
 def _save(preds, out_json, out_zip=""):
     os.makedirs(os.path.dirname(os.path.abspath(out_json)) or ".", exist_ok=True)
@@ -230,7 +216,7 @@ def _save(preds, out_json, out_zip=""):
 
 
 def build_parser():
-    p = argparse.ArgumentParser(description="MGBIE predictor (V6+V7+V8 ensemble)")
+    p = argparse.ArgumentParser(description="MGBIE RAME predictor (Strict+Relaxed+Balanced ensemble)")
     p.add_argument("--api_url",  default=os.environ.get("MGBIE_BASE_URL", "http://localhost:8000/v1"),
                    help="OpenAI-compatible API base URL (or set MGBIE_BASE_URL env)")
     p.add_argument("--model",    default=os.environ.get("MGBIE_MODEL", "your-model-name"),
@@ -238,16 +224,15 @@ def build_parser():
     p.add_argument("--input",    required=True, help="Input JSON (test.json or train.json)")
     p.add_argument("--output",   required=True, help="Output prediction JSON")
     p.add_argument("--pool",     default="data/train.json", help="Demo pool JSON (default: data/train.json)")
-    p.add_argument("--dev_split",default="", help="dev_split.json for dev evaluation mode")
     p.add_argument("--workers",  type=int, default=32, help="Parallel workers")
     p.add_argument("--zip",      default="", help="Also write submit.zip")
     p.add_argument("--retriever", default="hybrid", choices=["hybrid", "bm25"],
                    help="Retrieval method: 'hybrid' (BM25+Embedding RRF) or 'bm25' (BM25 only)")
     p.add_argument("--embedding_cache", default="data/train_embeddings.npy",
                    help="Path to pre-computed embedding .npy cache")
-    p.add_argument("--merge_v6", default="", help="Pre-computed V6 raw JSON (skip LLM calls)")
-    p.add_argument("--merge_v7", default="", help="Pre-computed V7 raw JSON")
-    p.add_argument("--merge_v8", default="", help="Pre-computed V8 raw JSON")
+    p.add_argument("--merge_strict",   default="", help="Pre-computed Strict raw JSON (skip LLM calls)")
+    p.add_argument("--merge_relaxed",  default="", help="Pre-computed Relaxed raw JSON")
+    p.add_argument("--merge_balanced", default="", help="Pre-computed Balanced raw JSON")
     return p
 
 

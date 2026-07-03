@@ -157,24 +157,40 @@ def to_official(text: str, raw: Dict[str, Any]) -> Dict[str, Any]:
 # ── Majority vote ─────────────────────────────────────────────────────────────
 
 def majority_vote(draws: List[Dict[str, Any]], threshold: int) -> Dict[str, Any]:
-    """Keep entities/relations that appear in >= threshold draws."""
+    """Keep entities/relations (occurrence-based) that appear in >= threshold draws.
+
+    Voting is performed on the raw LLM output format (text + label + occurrence
+    index), without prior span alignment.  The returned result is also in
+    occurrence-based form and must be passed through :func:`to_official` for
+    the final span-based submission.
+    """
     assert draws
-    text = draws[0]["text"]
     ent_cnt: Dict[tuple, int] = {}; ent_ex: Dict[tuple, Any] = {}
     rel_cnt: Dict[tuple, int] = {}; rel_ex: Dict[tuple, Any] = {}
     for d in draws:
         seen_e, seen_r = set(), set()
-        for e in d.get("entities", []):
-            k = (e["start"], e["end"], e["label"])
+        for e in d.get("entities", []) or []:
+            if not isinstance(e, dict):
+                continue
+            k = (e.get("text") or "", e.get("label") or "",
+                 int(e.get("occurrence") or 1))
             if k not in seen_e:
-                seen_e.add(k); ent_cnt[k] = ent_cnt.get(k, 0) + 1; ent_ex.setdefault(k, e)
-        for r in d.get("relations", []):
-            k = (r["head_start"], r["head_end"], r["head_type"],
-                 r["tail_start"], r["tail_end"], r["tail_type"], r["label"])
+                seen_e.add(k)
+                ent_cnt[k] = ent_cnt.get(k, 0) + 1
+                ent_ex.setdefault(k, e)
+        for r in d.get("relations", []) or []:
+            if not isinstance(r, dict):
+                continue
+            k = (r.get("head") or "", r.get("head_label") or "",
+                 int(r.get("head_occurrence") or 1),
+                 r.get("tail") or "", r.get("tail_label") or "",
+                 int(r.get("tail_occurrence") or 1),
+                 r.get("label") or "")
             if k not in seen_r:
-                seen_r.add(k); rel_cnt[k] = rel_cnt.get(k, 0) + 1; rel_ex.setdefault(k, r)
+                seen_r.add(k)
+                rel_cnt[k] = rel_cnt.get(k, 0) + 1
+                rel_ex.setdefault(k, r)
     return {
-        "text": text,
         "entities":  [ent_ex[k] for k, c in ent_cnt.items() if c >= threshold],
         "relations": [rel_ex[k] for k, c in rel_cnt.items() if c >= threshold],
     }
