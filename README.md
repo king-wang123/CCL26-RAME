@@ -1,6 +1,6 @@
 # RAME：检索增强多Prompt集成的小杂粮育种信息抽取方法
 
-> [CCL 2026 评测任务五（MGBIE）](https://tianchi.aliyun.com/competition/entrance/532465)  
+> [CCL 2026 评测任务五（MGBIE）杂粮育种信息抽取评测](https://tianchi.aliyun.com/competition/entrance/532465)  
 > **不微调 第一名方案**
 
 ## 方法概述
